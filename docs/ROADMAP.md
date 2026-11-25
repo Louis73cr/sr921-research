@@ -5,18 +5,32 @@ OTA can never leave the gateway worse than stock. If our layer ever fails, the b
 still boot the Vaillant stack and keep the cloud. Constraint set by the owner:
 **never lose the Vaillant cloud; default state must be restorable.**
 
-## Chosen approach: Option B — overlay init
+## Proven: custom kernel+initramfs boots, SSH works (RAM-only)
 
-Insert a tiny stage between U-Boot and the Vaillant userland that overlays our additions
-on top of the read-only squashfs (`overlayfs`), from files kept on a partition OTA does
-not touch. Nothing in the stock rootfs is edited.
+Milestone reached with **zero eMMC writes**: U-Boot loads the stock FIT kernel, a
+RAM-patched DTB (re-enabling the debug UART), and our cross-built initramfs over TFTP,
+then boots it. A static ARMv7 dropbear starts and accepts key auth. Confirms HAB is open,
+FIT needs no signature, and our toolchain targets the right ABI. See
+`firmware/build_initramfs.sh` + `tools/ram_ssh_test*`.
 
-- Our files (dropbear, keys, status reporter, eBUS bridge) live outside the A/B rootfs.
-- `overlayfs` (kernel supports it) merges them read-only over `/`.
-- The Vaillant stack starts normally; cloud + app unaffected.
-- On OTA: Vaillant replaces the rootfs; our overlay re-applies on next boot. If a future
-  OTA breaks the hook, it is designed to **fall through to a normal boot** (cloud kept,
-  our layer lost until re-applied).
+Lessons: busybox/dropbear must be **ARMv7** (not the amd64 build host); this busybox has
+`ifconfig` but no `ip`; `/init` parses the IP from the kernel cmdline in pure shell.
+
+## Persistence approach: init-wrapper + bind-mounts (NOT overlayfs)
+
+Recon finding: **the Vaillant kernel has no overlayfs** (not built-in, no `overlay.ko`).
+So we persist via `mount --bind` (confirmed working) instead:
+
+- Keep our files (dropbear, host/authorized keys, our `.service` units, status reporter)
+  on a writable partition the stock rootfs doesn't use (p5/p8, f2fs).
+- A small `init=` wrapper, injected via the **U-Boot `optargs` env** (one reversible env
+  write; full `printenv` is backed up), runs before systemd: it bind-mounts our unit
+  files into the systemd `.wants` dirs on the read-only squashfs, bind-mounts `/dev/null`
+  over `mender-client.service` to **block OTA on this boot only**, then execs the real
+  `/lib/systemd/systemd`.
+- The Vaillant stack starts normally; cloud + app unaffected. Stock slot (p7) is never
+  edited → instant rollback by clearing the env var. If a future OTA changes U-Boot and
+  drops `optargs`, the box simply boots stock (cloud kept, our layer gone until re-added).
 
 ### Trade-offs vs. Option A (block OTA outright)
 

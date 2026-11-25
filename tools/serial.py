@@ -20,7 +20,9 @@ def open_port(dev="/dev/ttyUSB0", baud=termios.B115200):
 
 
 def read_until(fd, token=None, timeout=5.0, sink=None):
-    """Read until `token` (bytes) seen in the tail, or timeout. Returns buffer."""
+    """Read until `token` (str/bytes) seen in the tail, or timeout. Returns buffer."""
+    if isinstance(token, str):
+        token = token.encode()
     buf, end = b"", time.time() + timeout
     while time.time() < end:
         if select.select([fd], [], [], 0.05)[0]:

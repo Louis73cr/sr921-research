@@ -15,7 +15,7 @@ JOBS=$(nproc)
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq gcc-${HOST} make wget bzip2 zlib1g-dev cpio xz-utils busybox-static u-boot-tools >/dev/null
+apt-get install -y -qq gcc-${HOST} make wget bzip2 zlib1g-dev cpio xz-utils u-boot-tools >/dev/null
 
 work=/tmp/w; mkdir -p "$work"; cd "$work"
 wget -q "https://matt.ucc.asn.au/dropbear/releases/dropbear-${DROPBEAR_VER}.tar.bz2"
@@ -37,8 +37,11 @@ ${HOST}-strip dropbear dropbearkey scp
 R="$work/root"; rm -rf "$R"
 for d in bin sbin etc/dropbear proc sys dev root/.ssh var/run; do mkdir -p "$R/$d"; done
 cp dropbear "$R/sbin/"; cp dropbearkey scp "$R/bin/"
-cp /usr/bin/busybox "$R/bin/busybox"
-for a in sh mount ip ifconfig sleep cat ls mkdir ln; do ln -sf busybox "$R/bin/$a"; done
+# ARMv7 static busybox (musl) — must match target arch, NOT the amd64 build host
+wget -q -O "$R/bin/busybox" \
+    "https://busybox.net/downloads/binaries/1.31.0-defconfig-multiarch-musl/busybox-armv7l"
+chmod +x "$R/bin/busybox"
+for a in sh ash mount ip ifconfig route sleep cat ls mkdir ln sed cut grep; do ln -sf busybox "$R/bin/$a"; done
 cp "$PUBKEY_SRC" "$R/root/.ssh/authorized_keys"; chmod 600 "$R/root/.ssh/authorized_keys"
 # dropbear needs root in /etc/passwd (key-only, so shadow/password irrelevant)
 echo 'root:x:0:0:root:/root:/bin/sh' > "$R/etc/passwd"
@@ -49,9 +52,15 @@ cat > "$R/init" <<'INIT'
 # IP is taken from the kernel cmdline token `boardip=A.B.C.D/NN` (no IP baked in).
 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
 ( exec 3>/dev/watchdog; while :; do printf . >&3; sleep 5; done ) &   # feed hw watchdog
-CIDR=$(sed -n 's/.*boardip=\([0-9./]*\).*/\1/p' /proc/cmdline)
-ip link set eth0 up
-[ -n "$CIDR" ] && ip addr add "$CIDR" dev eth0
+CIDR=""                                   # parse boardip=A.B.C.D/NN without sed
+for tok in $(cat /proc/cmdline); do
+    case "$tok" in boardip=*) CIDR="${tok#boardip=}" ;; esac
+done
+if [ -n "$CIDR" ]; then                   # this busybox has ifconfig, not ip
+    IP="${CIDR%/*}"; PFX="${CIDR#*/}"
+    case "$PFX" in 8) NM=255.0.0.0;; 16) NM=255.255.0.0;; *) NM=255.255.255.0;; esac
+    ifconfig eth0 "$IP" netmask "$NM" up
+fi
 [ -f /etc/dropbear/dropbear_ecdsa_host_key ] || /bin/dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key
 echo "[initramfs] dropbear :22 on ${CIDR:-no-ip} — RAM only, nothing written to eMMC"
 /sbin/dropbear -r /etc/dropbear/dropbear_ecdsa_host_key -E -F

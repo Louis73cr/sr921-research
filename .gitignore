@@ -14,3 +14,4 @@ build/_work/
 dropbear
 initramfs.cpio*
 firmware/_out/
+bridge/target/

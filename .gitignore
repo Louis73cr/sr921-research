@@ -1,0 +1,16 @@
+# Never commit device-unique data or vendor firmware
+*.img
+*.img.gz
+*.bin
+*.pem
+*.key
+*.dtb
+*backup*/
+secrets*
+serial.conf
+# build artifacts
+build/_work/
+*.o
+dropbear
+initramfs.cpio*
+firmware/_out/

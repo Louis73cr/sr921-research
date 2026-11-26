@@ -54,6 +54,27 @@ fn decode(ty: Ty, resp: &[u8], ign: usize, factor: f64) -> Option<f64> {
 
 struct Hit { key: String, name: String, unit: String, dclass: String, sclass: String, value: f64 }
 
+// Friendly names for 0x15 (sensoCOMFORT VRC720) b524 registers, keyed by the req[2..]
+// index hex (from ebusd 15.ctlv2). Unknown indexes fall back to a generic ctrl_<idx>.
+fn ctrl_name(idx: &str) -> (String, &'static str, &'static str) {
+    match idx {
+        "00003900" => ("Pression d'eau".into(), "bar", "pressure"),
+        "00007300" => ("Temperature exterieure".into(), "°C", "temperature"),
+        "01000400" => ("Consigne ECS".into(), "°C", "temperature"),
+        "01000500" => ("Temperature ballon ECS".into(), "°C", "temperature"),
+        "02000800" => ("Temperature depart HC1".into(), "°C", "temperature"),
+        "02000f00" => ("Courbe de chauffe HC1".into(), "", ""),
+        "02001200" => ("Consigne depart min HC1".into(), "°C", "temperature"),
+        "02001400" => ("Limite ete HC1".into(), "°C", "temperature"),
+        "03010900" => ("Consigne nuit Zone 2".into(), "°C", "temperature"),
+        "03010f00" => ("Temperature piece Zone 2".into(), "°C", "temperature"),
+        "03011400" => ("Consigne piece active Zone 2".into(), "°C", "temperature"),
+        "03012200" => ("Consigne jour Zone 2".into(), "°C", "temperature"),
+        "03012800" => ("Humidite Zone 2".into(), "%", "humidity"),
+        _ => (format!("ctrl_{}", idx), "°C", "temperature"),
+    }
+}
+
 // Given a full response telegram's bytes [QQ ZZ PB SB reqNN req.. respNN resp..],
 // return every sensor reading it carries.
 fn decode_telegram(b: &[u8]) -> Vec<Hit> {
@@ -78,9 +99,10 @@ fn decode_telegram(b: &[u8]) -> Vec<Hit> {
     if zz == 0x15 && sb == 0x24 && req.len() >= 4 && req[0] == 2 && req[1] == 0 && resp.len() >= 4 {
         let t = &resp[resp.len()-4..];
         let x = f32::from_le_bytes([t[0],t[1],t[2],t[3]]);
-        if x.is_finite() && x.abs() < 300.0 {
+        if x.is_finite() && x.abs() < 1000.0 {
             let idx: String = req[2..].iter().map(|b| format!("{:02x}", b)).collect();
-            out.push(Hit{key:format!("ctrl_{}", idx),name:format!("Regulateur {}", idx),unit:"°C".into(),dclass:"temperature".into(),sclass:"measurement".into(),value:(x as f64*100.0).round()/100.0});
+            let (name, unit, dclass) = ctrl_name(&idx);
+            out.push(Hit{key:format!("ctrl_{}", idx), name, unit:unit.into(), dclass:dclass.into(), sclass:"measurement".into(), value:(x as f64*100.0).round()/100.0});
         }
     }
     out
@@ -95,6 +117,7 @@ fn put_len(v: &mut Vec<u8>, mut n: usize) { loop { let mut b=(n%128) as u8; n/=1
 impl Mqtt {
     fn connect(&mut self) -> std::io::Result<()> {
         let mut s = TcpStream::connect((self.host.as_str(), self.port))?;
+        s.set_nodelay(true).ok();
         s.set_write_timeout(Some(Duration::from_secs(10)))?;
         s.set_read_timeout(Some(Duration::from_secs(10)))?;
         let mut vh = vec![0u8,4]; vh.extend_from_slice(b"MQTT"); vh.push(4);
